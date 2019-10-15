@@ -79,9 +79,10 @@ func GetDefaultOptions() *Options {
 // A Surveyor instance
 type Surveyor struct {
 	sync.Mutex
-	opts Options
-	nc   *nats.Conn
-	http net.Listener
+	opts   Options
+	nc     *nats.Conn
+	http   net.Listener
+	statzC prometheus.Collector
 }
 
 func connect(opts *Options) (*nats.Conn, error) {
@@ -103,6 +104,14 @@ func connect(opts *Options) (*nats.Conn, error) {
 	nopts = append(nopts, nats.ClosedHandler(func(_ *nats.Conn) {
 		log.Println("Connection permanently lost!")
 	}))
+	nopts = append(nopts, nats.ErrorHandler(func(c *nats.Conn, s *nats.Subscription, err error) {
+		if s != nil {
+			log.Printf("Error: err=%v", err)
+		} else {
+			log.Printf("Error: subject=%s, err=%v", s.Subject, err)
+		}
+	}))
+	nopts = append(nopts, nats.MaxReconnects(10240))
 
 	nc, err := nats.Connect(opts.URLs, nopts...)
 	if err != nil {
@@ -117,7 +126,7 @@ func connect(opts *Options) (*nats.Conn, error) {
 func NewSurveyor(opts *Options) (*Surveyor, error) {
 	nc, err := connect(opts)
 	if err != nil {
-		log.Fatalf("couldn't connect to a NATS server: %v", err)
+		return nil, err
 	}
 	return &Surveyor{
 		nc:   nc,
@@ -126,8 +135,8 @@ func NewSurveyor(opts *Options) (*Surveyor, error) {
 }
 
 func (s *Surveyor) createCollector() error {
-	c := NewCollector(s.nc, s.opts.ExpectedServers, s.opts.PollTimeout)
-	err := prometheus.Register(c)
+	s.statzC = NewStatzCollector(s.nc, s.opts.ExpectedServers, s.opts.PollTimeout)
+	err := prometheus.Register(s.statzC)
 	for i := 0; i < 50 && err != nil; i++ {
 		if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
 			// ignore
@@ -139,7 +148,7 @@ func (s *Surveyor) createCollector() error {
 		log.Printf("Error registering collector: %v", err)
 		log.Printf("Retrying in 500 ms...")
 		time.Sleep(500 * time.Millisecond)
-		err = prometheus.Register(c)
+		err = prometheus.Register(s.statzC)
 	}
 	return err
 }
@@ -287,9 +296,6 @@ func (s *Surveyor) startHTTP() error {
 				// In a test environment, this can fail because the server is already running.
 				// debugf
 				log.Printf("Unable to start HTTP server (may already be running): %v", err)
-			} else {
-				// debugf
-				log.Printf("Started HTTP server.")
 			}
 		}
 	}()
@@ -310,6 +316,9 @@ func (s *Surveyor) Start() error {
 
 // Stop stops the surveyor
 func (s *Surveyor) Stop() {
-	// Finish the last request to keep metrics sane
+	s.Lock()
+	prometheus.Unregister(s.statzC)
+	s.http.Close()
 	s.nc.Drain()
+	s.Unlock()
 }

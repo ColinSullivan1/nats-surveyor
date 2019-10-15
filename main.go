@@ -23,13 +23,11 @@ import (
 	"time"
 
 	"github.com/ColinSullivan1/nats-surveyor/surveyor"
-	"github.com/nats-io/prometheus-nats-exporter/exporter"
 )
 
 var version = "0.0.1"
 
 func main() {
-	var debugAndTrace bool
 	var printVersion bool
 
 	opts := surveyor.GetDefaultOptions()
@@ -41,10 +39,9 @@ func main() {
 	flag.IntVar(&opts.ExpectedServers, "c", 1, "Expected number of servers")
 	flag.DurationVar(&opts.PollTimeout, "timeout", 3*time.Second, "Polling timeout")
 	flag.IntVar(&opts.ListenPort, "port", surveyor.DefaultListenPort, "Port to listen on.")
-	flag.IntVar(&opts.ListenPort, "p", exporter.DefaultListenPort, "Port to listen on.")
-	flag.StringVar(&opts.ListenAddress, "addr", exporter.DefaultListenAddress, "Network host to listen on.")
-	flag.StringVar(&opts.ListenAddress, "a", exporter.DefaultListenAddress, "Network host to listen on.")
-	flag.BoolVar(&debugAndTrace, "DV", false, "Enable debug and trace log levels.")
+	flag.IntVar(&opts.ListenPort, "p", surveyor.DefaultListenPort, "Port to listen on.")
+	flag.StringVar(&opts.ListenAddress, "addr", surveyor.DefaultListenAddress, "Network host to listen on.")
+	flag.StringVar(&opts.ListenAddress, "a", surveyor.DefaultListenAddress, "Network host to listen on.")
 	flag.StringVar(&opts.CertFile, "tlscert", "", "Server certificate file (Enables HTTPS).")
 	flag.StringVar(&opts.KeyFile, "tlskey", "", "Private key for server certificate (used with HTTPS).")
 	flag.StringVar(&opts.CaFile, "tlscacert", "", "Client certificate CA for verification (used with HTTPS).")

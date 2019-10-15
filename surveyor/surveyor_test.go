@@ -19,123 +19,24 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	nats "github.com/nats-io/go-nats"
-	ns "github.com/nats-io/nats-server/server"
+	st "github.com/ColinSullivan1/nats-surveyor/test"
 )
 
-func StartServer(t *testing.T, confFile string) *ns.Server {
-	opts, err := ns.ProcessConfigFile(confFile)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	s, err := ns.NewServer(opts)
-	if err != nil || s == nil {
-		panic(fmt.Sprintf("No NATS Server object returned: %v", err))
-	}
-
-	if !opts.NoLog {
-		s.ConfigureLogger()
-	}
-
-	// Run server in Go routine.
-	go s.Start()
-
-	// Wait for accept loop(s) to be started
-	if !s.ReadyForConnections(10 * time.Second) {
-		panic("Unable to start NATS Server in Go Routine")
-	}
-	return s
-}
-
-type SuperCluster struct {
-	servers []*ns.Server
-	clients []*nats.Conn
-}
-
-var configFiles = []string{"../test/r1s1.conf", "../test/r1s2.conf", "../test/r2s1.conf"}
-
+// Testing constants
 const (
-	clientCert      = "../test/certs/client-cert.pem"
-	clientKey       = "../test/certs/client-key.pem"
-	serverCert      = "../test/certs/server-cert.pem"
-	serverKey       = "../test/certs/server-key.pem"
-	caCertFile      = "../test/certs/ca.pem"
-	expectedClients = 3
+	clientCert         = "../test/certs/client-cert.pem"
+	clientKey          = "../test/certs/client-key.pem"
+	serverCert         = "../test/certs/server-cert.pem"
+	serverKey          = "../test/certs/server-key.pem"
+	caCertFile         = "../test/certs/ca.pem"
+	defaultSurveyorURL = "http://127.0.0.1:7777/metrics"
 )
-
-// This function creates a small supercluster for testing, with one client per server.
-func NewSuperCluster(t *testing.T) *SuperCluster {
-	sc := &SuperCluster{}
-	//var servers = make([]*ns.Server, 0)
-	//var clients = make([]*nats.Conn, 0)
-	for _, f := range configFiles {
-		sc.servers = append(sc.servers, StartServer(t, f))
-	}
-
-	return sc
-}
-
-func (sc *SuperCluster) Shutdown() {
-	for _, c := range sc.clients {
-		c.Close()
-	}
-	for _, s := range sc.servers {
-		s.Shutdown()
-	}
-}
-
-func (sc *SuperCluster) SetupClientsAndVerify(t *testing.T) {
-
-	for _, s := range sc.servers {
-		c, err := nats.Connect(s.ClientURL(), nats.UserCredentials("../test/myuser.creds"))
-		if err != nil {
-			t.Fatalf("Couldn't connect a client to %s: %v", s.ClientURL(), err)
-		}
-		_, err = c.Subscribe("test.ready", func(msg *nats.Msg) {
-			c.Publish(msg.Reply, nil)
-		})
-		if err != nil {
-			t.Fatalf("Couldn't subscribe to \"test.ready\": %v", err)
-		}
-		_, err = c.Subscribe(("test.data"), func(msg *nats.Msg) {
-			c.Publish(msg.Reply, []byte("response"))
-		})
-		if err != nil {
-			t.Fatalf("Couldn't subscribe to \"test.data\": %v", err)
-		}
-	}
-
-	// now poll until we get responses from all subscribers.
-	c := sc.clients[0]
-	inbox := nats.NewInbox()
-	s, err := c.SubscribeSync(inbox)
-	if err != nil {
-		t.Fatalf("couldn't subscribe to test data:  %v", err)
-	}
-	var j int
-
-	for i := 0; i < 10; i++ {
-		c.PublishRequest("test.ready", inbox, nil)
-		for j = 0; j < expectedClients; j++ {
-			_, err := s.NextMsg(time.Second * 5)
-			if err != nil {
-				break
-			}
-		}
-		if j == expectedClients {
-			break
-		}
-	}
-	if j != expectedClients {
-		t.Fatalf("couldn't ensure the supercluster was formed")
-	}
-}
 
 func httpGetSecure(url string) (*http.Response, error) {
 	tlsConfig := &tls.Config{}
@@ -164,23 +65,16 @@ func httpGet(url string) (*http.Response, error) {
 	return httpClient.Get(url)
 }
 
-func buildExporterURL(user, pass, addr string, path string, secure bool) string {
-	proto := "http"
-	if secure {
-		proto = "https"
-	}
-
-	if user != "" {
-		return fmt.Sprintf("%s://%s:%s@%s%s", proto, user, pass, addr, path)
-	}
-
-	return fmt.Sprintf("%s://%s%s", proto, addr, path)
+func getTestOptions() *Options {
+	o := GetDefaultOptions()
+	o.Credentials = st.SystemCreds
+	return o
 }
 
-func checkExporterFull(t *testing.T, user, pass, addr, result, path string, secure bool, expectedRc int) (string, error) {
+// PollSurveyorEndpoint polls a surveyor endpoint for data
+func PollSurveyorEndpoint(t *testing.T, url string, secure bool, expectedRc int) (string, error) {
 	var resp *http.Response
 	var err error
-	url := buildExporterURL(user, pass, addr, path, secure)
 
 	if secure {
 		resp, err = httpGetSecure(url)
@@ -204,28 +98,149 @@ func checkExporterFull(t *testing.T, user, pass, addr, result, path string, secu
 	if err != nil {
 		return "", fmt.Errorf("got an error reading the body: %v", err)
 	}
-	results := string(body)
+	return string(body), nil
+}
+
+func pollAndCheck(t *testing.T, url, result string) (string, error) {
+	results, err := PollSurveyorEndpoint(t, url, false, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
 	if !strings.Contains(results, result) {
-		//log.Printf("\n\nRESULTS: %s\n\n", results)
+		log.Printf("\n\nRESULTS: %s\n\n", results)
 		return results, fmt.Errorf("response did not have NATS data")
 	}
 	return results, nil
 }
 
-func checkExporter(t *testing.T, addr string, secure bool) error {
-	_, err := checkExporterFull(t, "", "", addr, "nats_core_cpu", "/metrics", secure, http.StatusOK)
-	return err
-}
-
-func checkExporterForResult(t *testing.T, addr, result string, secure bool) (string, error) {
-	return checkExporterFull(t, "", "", addr, result, "/metrics", secure, http.StatusOK)
-}
-
 func TestSurveyor_Basic(t *testing.T) {
-	sc := NewSuperCluster(t)
+	sc := st.NewSuperCluster(t)
 	defer sc.Shutdown()
-	opts := GetDefaultOptions()
-	opts.Credentials = "../test/SYS.creds"
+
+	s, err := NewSurveyor(getTestOptions())
+	if err != nil {
+		t.Fatalf("couldn't create surveyor: %v", err)
+	}
+	if err = s.Start(); err != nil {
+		t.Fatalf("start error: %v", err)
+	}
+	defer s.Stop()
+
+	// poll and check for basic core NATS output
+	output, err := pollAndCheck(t, defaultSurveyorURL, "nats_core_mem_bytes")
+	if err != nil {
+		t.Fatalf("poll error:  %v\n", err)
+	}
+
+	// check for route output
+	if strings.Contains(output, "nats_core_route_recv_msg_count") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+
+	// check for gateway output
+	if strings.Contains(output, "nats_core_gateway_sent_bytes") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+
+	// check for labels
+	if strings.Contains(output, "nats_server_host") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	if strings.Contains(output, "nats_server_cluster") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	if strings.Contains(output, "nats_server_id") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	if strings.Contains(output, "nats_server_gateway_name") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	if strings.Contains(output, "nats_server_gateway_id") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	if strings.Contains(output, "nats_server_route_id") == false {
+		t.Fatalf("invalid output:  %v\n", err)
+	}
+	s.Stop()
+}
+
+func TestSurveyor_Reconnect(t *testing.T) {
+	sc := st.NewSuperCluster(t)
+	defer sc.Shutdown()
+
+	s, err := NewSurveyor(getTestOptions())
+	if err != nil {
+		t.Fatalf("couldn't create surveyor: %v", err)
+	}
+	if err = s.Start(); err != nil {
+		t.Fatalf("start error: %v", err)
+	}
+	defer s.Stop()
+
+	// poll and check for basic core NATS output
+	_, err = pollAndCheck(t, defaultSurveyorURL, "nats")
+	if err != nil {
+		t.Fatalf("poll error:  %v\n", err)
+	}
+
+	sc.Servers[0].Shutdown()
+
+	// this poll should fail...
+	output, err := pollAndCheck(t, defaultSurveyorURL, "nats_core_mem_bytes")
+	if strings.Contains(output, "nats_up 0") == false {
+		t.Fatalf("output did not contain nats-up 0")
+	}
+
+	// poll and check for basic core NATS output, the next server should
+	for i := 0; i < 5; i++ {
+		output, err = pollAndCheck(t, defaultSurveyorURL, "nats_core_mem_bytes")
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	if err != nil {
+		t.Fatalf("Retries failed.")
+	}
+	if strings.Contains(output, "nats_up 1") == false {
+		t.Fatalf("output did not contain nats-up 1")
+	}
+}
+
+func TestSurveyor_NoSystemAccount(t *testing.T) {
+	ns := st.StartBasicServer()
+	defer ns.Shutdown()
+
+	s, err := NewSurveyor(getTestOptions())
+	if err != nil {
+		t.Fatalf("couldn't create surveyor: %v", err)
+	}
+	if err = s.Start(); err != nil {
+		t.Fatalf("start error: %v", err)
+	}
+	defer s.Stop()
+
+	results, err := PollSurveyorEndpoint(t, defaultSurveyorURL, false, http.StatusOK)
+	if err != nil {
+		t.Fatalf("Couldn't poll exporter: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("Should have recieved some non-nats data")
+	}
+	if strings.Contains(results, "nats_core_mem_bytes") {
+		t.Fatalf(("Should NOT have NATS data"))
+	}
+}
+
+func TestSurveyor_HTTPS(t *testing.T) {
+	sc := st.NewSuperCluster(t)
+	defer sc.Shutdown()
+
+	opts := getTestOptions()
+	opts.CaFile = caCertFile
+	opts.CertFile = serverCert
+	opts.KeyFile = serverKey
+
 	s, err := NewSurveyor(opts)
 	if err != nil {
 		t.Fatalf("couldn't create surveyor: %v", err)
@@ -233,8 +248,86 @@ func TestSurveyor_Basic(t *testing.T) {
 	if err = s.Start(); err != nil {
 		t.Fatalf("start error: %v", err)
 	}
-	if err := checkExporter(t, "127.0.0.1:7777", false); err != nil {
-		t.Fatalf("couldn't poll exporter:  %v\n", err)
+	defer s.Stop()
+
+	// Check that we CANNOT connect with http
+	if _, err = PollSurveyorEndpoint(t, "http://127.0.0.1:7777/metrics", false, http.StatusOK); err == nil {
+		t.Fatalf("didn't recieve an error")
 	}
-	s.Stop()
+	// Check that we CAN connect with https
+	if _, err = PollSurveyorEndpoint(t, "https://127.0.0.1:7777/metrics", true, http.StatusOK); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+}
+
+func TestSurveyor_UserPass(t *testing.T) {
+	ns := st.StartBasicServer()
+	defer ns.Shutdown()
+
+	opts := getTestOptions()
+	opts.HTTPUser = "colin"
+	opts.HTTPPassword = "secret"
+	s, err := NewSurveyor(opts)
+	if err != nil {
+		t.Fatalf("couldn't create surveyor: %v", err)
+	}
+	if err = s.Start(); err != nil {
+		t.Fatalf("start error: %v", err)
+	}
+	defer s.Stop()
+
+	if _, err = PollSurveyorEndpoint(t, "http://colin:secret@127.0.0.1:7777/metrics", false, http.StatusOK); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+
+	if _, err = PollSurveyorEndpoint(t, defaultSurveyorURL, false, http.StatusUnauthorized); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+
+	if _, err = PollSurveyorEndpoint(t, "http://garbage:badpass@127.0.0.1:7777/metrics", false, http.StatusUnauthorized); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+
+	if _, err = PollSurveyorEndpoint(t, "http://colin:badpass@127.0.0.1:7777/metrics", false, http.StatusUnauthorized); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+
+	if _, err = PollSurveyorEndpoint(t, "http://foo:secret@127.0.0.1:7777/metrics", false, http.StatusUnauthorized); err != nil {
+		t.Fatalf("received unexpected error: %v", err)
+	}
+}
+
+func TestSurveyor_NoServer(t *testing.T) {
+	s, err := NewSurveyor(getTestOptions())
+	defer func() {
+		if s != nil {
+			s.Stop()
+		}
+	}()
+
+	if err == nil {
+		t.Fatalf("didn't get expected error")
+	}
+}
+
+func TestSurveyor_MissingResponses(t *testing.T) {
+	sc := st.NewSuperCluster(t)
+	defer sc.Shutdown()
+
+	s, err := NewSurveyor(getTestOptions())
+	if err != nil {
+		t.Fatalf("couldn't create surveyor: %v", err)
+	}
+	if err = s.Start(); err != nil {
+		t.Fatalf("start error: %v", err)
+	}
+	defer s.Stop()
+
+	sc.Servers[1].Shutdown()
+
+	// poll and check for basic core NATS output
+	_, err = pollAndCheck(t, defaultSurveyorURL, "nats_core_mem_bytes")
+	if err != nil {
+		t.Fatalf("poll error:  %v\n", err)
+	}
 }

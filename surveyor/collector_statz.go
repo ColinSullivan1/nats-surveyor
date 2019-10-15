@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 // statzDescs holds the metric descriptions
 type statzDescs struct {
 	Info             *prometheus.Desc
+	Seq              *prometheus.Desc
 	Start            *prometheus.Desc
 	Mem              *prometheus.Desc
 	Cores            *prometheus.Desc
@@ -40,11 +42,24 @@ type statzDescs struct {
 	NumSubs          *prometheus.Desc
 	SentMsgs         *prometheus.Desc
 	SentBytes        *prometheus.Desc
-	ReceivedMsgs     *prometheus.Desc
-	ReceivedBytes    *prometheus.Desc
+	RecvMsgs         *prometheus.Desc
+	RecvBytes        *prometheus.Desc
 	SlowConsumers    *prometheus.Desc
-	//Routes           []*RouteStat   `json:"routes,omitempty"`
-	//Gateways         []*GatewayStat `json:"gateways,omitempty"`
+	RTT              *prometheus.Desc
+
+	// Routes
+	RouteSentMsgs  *prometheus.Desc
+	RouteSentBytes *prometheus.Desc
+	RouteRecvMsgs  *prometheus.Desc
+	RouteRecvBytes *prometheus.Desc
+	RoutePending   *prometheus.Desc
+
+	// Gateways
+	GatewaySentMsgs   *prometheus.Desc
+	GatewaySentBytes  *prometheus.Desc
+	GatewayRecvMsgs   *prometheus.Desc
+	GatewayRecvBytes  *prometheus.Desc
+	GatewayNumInbound *prometheus.Desc
 }
 
 // StatzCollector collects statz from a server deployment
@@ -63,51 +78,101 @@ type StatzCollector struct {
 	doneCh      chan struct{}
 	moreCh      chan struct{}
 	descs       statzDescs
+	natsUp      *prometheus.Desc
 }
+
+////////////////////////////////////////////
+// LABELS
+////////////////////////////////////////////
 
 var (
-	serverlabels = []string{"nats_server_cluster", "nats_server_host", "nats_server_id"}
+	serverLabels     = []string{"nats_server_cluster", "nats_server_host", "nats_server_id"}
+	serverInfoLabels = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_version"}
+	routeLabels      = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_route_id"}
+	gatewayLabels    = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_gateway_name", "nats_server_gateway_id"}
 )
 
-func getLabelValues(stats *server.ServerStatsMsg) []string {
-	return []string{stats.Server.Cluster, stats.Server.Host, stats.Server.ID}
+func serverLabelValues(sm *server.ServerStatsMsg) []string {
+	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID}
 }
 
-func newServerDesc(name, help string) *prometheus.Desc {
-	return prometheus.NewDesc(
-		prometheus.BuildFQName("nats", "core", name), help, serverlabels, nil)
+func serverInfoLabelValues(sm *server.ServerStatsMsg) []string {
+	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, sm.Server.Version}
 }
 
+func routeLabelValues(sm *server.ServerStatsMsg, rStat *server.RouteStat) []string {
+	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, strconv.FormatUint(rStat.ID, 10)}
+}
+
+func gatewayLabelValues(sm *server.ServerStatsMsg, gStat *server.GatewayStat) []string {
+	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, gStat.Name, strconv.FormatUint(gStat.ID, 10)}
+}
+
+// Up/Down on servers - look at discovery mechanisms in Prometheus - aging out, how does it work?
 func buildDescs(sc *StatzCollector) {
-	sc.descs.Start = newServerDesc("start", "Server start time")
-	sc.descs.Mem = newServerDesc("mem", "Server memory")
-	sc.descs.Cores = newServerDesc("cores", "Machine cores")
-	sc.descs.CPU = newServerDesc("cpu", "Server cpu utilization")
-	sc.descs.Connections = newServerDesc("connections", "Current number of client connections")
-	sc.descs.TotalConnections = newServerDesc("totalconns", "Total number of client connections serviced")
-	sc.descs.ActiveAccounts = newServerDesc("activeaccounts", "Number of active accounts")
-	sc.descs.NumSubs = newServerDesc("subs", "Current number of subscriptions")
-	sc.descs.SentMsgs = newServerDesc("sentmsgs", "Number of messages sent")
-	sc.descs.SentBytes = newServerDesc("sentbytes", "Number of messages sent")
-	sc.descs.ReceivedMsgs = newServerDesc("recvdmsgs", "Number of messages received")
-	sc.descs.ReceivedBytes = newServerDesc("recvdbytes", "Number of messages received")
-	sc.descs.SlowConsumers = newServerDesc("slowconsumers", "Number of slow consumers")
 
-	// TODO Routez
-	// TODO Gatewayz
+	newPromDesc := func(name, help string, labels []string) *prometheus.Desc {
+		return prometheus.NewDesc(
+			prometheus.BuildFQName("nats", "core", name), help, labels, nil)
+	}
+
+	// A unlabelled description for the up/down
+	sc.natsUp = prometheus.NewDesc(prometheus.BuildFQName("nats", "core", "nats_up"),
+		"1 if connected to NATS, 0 otherwise.  A gauge.", nil, nil)
+
+	sc.descs.Info = newPromDesc("info", "General Server information Summary gauge", serverInfoLabels)
+	sc.descs.Seq = newPromDesc("sequence_number", "Metric sequence number gauge", serverLabels)
+	sc.descs.Start = newPromDesc("start_time", "Server start time gauge", serverLabels)
+	sc.descs.Mem = newPromDesc("mem_bytes", "Server memory gauge", serverLabels)
+	sc.descs.Cores = newPromDesc("core_count", "Machine cores gauge", serverLabels)
+	sc.descs.CPU = newPromDesc("cpu_percentage", "Server cpu utilization gauge", serverLabels)
+	sc.descs.Connections = newPromDesc("connection_count", "Current number of client connections gauge", serverLabels)
+	sc.descs.TotalConnections = newPromDesc("total_connection_count", "Total number of client connections serviced gauge", serverLabels)
+	sc.descs.ActiveAccounts = newPromDesc("active_account_count", "Number of active accounts gauge", serverLabels)
+	sc.descs.NumSubs = newPromDesc("subs_count", "Current number of subscriptions gauge", serverLabels)
+	sc.descs.SentMsgs = newPromDesc("sent_msgs_count", "Number of messages sent gauge", serverLabels)
+	sc.descs.SentBytes = newPromDesc("sent_bytes", "Number of messages sent gauge", serverLabels)
+	sc.descs.RecvMsgs = newPromDesc("recv_msgs_count", "Number of messages received gauge", serverLabels)
+	sc.descs.RecvBytes = newPromDesc("recv_bytes", "Number of messages received gauge", serverLabels)
+	sc.descs.SlowConsumers = newPromDesc("slow_consumer_count", "Number of slow consumers gauge", serverLabels)
+	sc.descs.RTT = newPromDesc("rtt_nanoseconds", "RTT in nanoseconds gauge", serverLabels)
+
+	// Routes
+	sc.descs.RouteSentMsgs = newPromDesc("route_sent_msg_count", "Number of messages sent over the route gauge", routeLabels)
+	sc.descs.RouteSentBytes = newPromDesc("route_sent_bytes", "Number of bytes sent over the route gauge", routeLabels)
+	sc.descs.RouteRecvMsgs = newPromDesc("route_recv_msg_count", "Number of messages received over the route gauge", routeLabels)
+	sc.descs.RouteRecvBytes = newPromDesc("route_recv_bytes", "Number of bytes received over the route gauge", routeLabels)
+	sc.descs.RoutePending = newPromDesc("route_pending_bytes", "Number of bytes pending in the route gauge", routeLabels)
+
+	// Gateways
+	sc.descs.GatewaySentMsgs = newPromDesc("gateway_sent_msgs", "Number of messages sent over the gateway gauge", gatewayLabels)
+	sc.descs.GatewaySentBytes = newPromDesc("gateway_sent_bytes", "Number of messages sent over the gateway gauge", gatewayLabels)
+	sc.descs.GatewayRecvMsgs = newPromDesc("gateway_recv_msg_count", "Number of messages sent over the gateway gauge", gatewayLabels)
+	sc.descs.GatewayRecvBytes = newPromDesc("gateway_recv_bytes", "Number of messages sent over the gateway gauge", gatewayLabels)
+	sc.descs.GatewayNumInbound = newPromDesc("gateway_inbound_msg_count", "Number inbound messages through the gateway gauge", gatewayLabels)
+
+	// Add Number of leaf node connections
+	// Leaf nodes
+	// Remotes
+	// config_load_time
+
+	// Runtime go
+	// # of go routines
+	// GC time
+
+	// RTT on a node - histogram of connection RTTs
 }
 
-// NewCollector creates a
-func NewCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration) *StatzCollector {
+// NewStatzCollector creates a NATS Statz Collector
+func NewStatzCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration) *StatzCollector {
 	sc := &StatzCollector{
 		nc:          nc,
 		numServers:  numServers,
 		reply:       nc.NewRespInbox(),
 		pollTimeout: pollTimeout,
-		//stats : make()
-		servers: make(map[string]bool, numServers),
-		doneCh:  make(chan struct{}, 1),
-		moreCh:  make(chan struct{}, 1),
+		servers:     make(map[string]bool, numServers),
+		doneCh:      make(chan struct{}, 1),
+		moreCh:      make(chan struct{}, 1),
 	}
 	buildDescs(sc)
 	nc.Subscribe(sc.reply, sc.handleResponse)
@@ -124,6 +189,7 @@ func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 	rtt := time.Now().Sub(sc.start)
 	if sc.polling {
 		sc.stats = append(sc.stats, m)
+		sc.rtts[m.Server.ID] = rtt
 		if len(sc.stats) == sc.numServers {
 			sc.polling = false
 			sc.doneCh <- struct{}{}
@@ -140,13 +206,15 @@ func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 	sc.Unlock()
 }
 
-func (sc *StatzCollector) poll() {
+// poll will only fail if there is a NATS publishing error
+func (sc *StatzCollector) poll() error {
 	sc.Lock()
 	sc.start = time.Now()
 	sc.polling = true
 	sc.stats = nil
 	sc.rtts = make(map[string]time.Duration, sc.numServers)
 	sc.more = 0
+
 	// drain possible notification from previous poll
 	select {
 	case <-sc.moreCh:
@@ -154,10 +222,15 @@ func (sc *StatzCollector) poll() {
 	}
 	sc.Unlock()
 
+	// fail fast if we aren't connected to return a nats down (nats_up=0) to
+	// Prometheus
+	if sc.nc.IsConnected() == false {
+		return fmt.Errorf("no connection to NATS")
+	}
+
 	// Send our ping for statusz updates
-	log.Printf("Sending Request")
 	if err := sc.nc.PublishRequest("$SYS.REQ.SERVER.PING", sc.reply, nil); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Wait to collect all the servers responses.
@@ -214,11 +287,15 @@ func (sc *StatzCollector) poll() {
 			sc.servers[key] = false
 		}
 	}
+	return nil
 }
 
 // Describe is the Prometheus interface to describe metrics for
 // the prometheus system
 func (sc *StatzCollector) Describe(ch chan<- *prometheus.Desc) {
+	// Server Descriptions
+	ch <- sc.natsUp
+	ch <- sc.descs.Info
 	ch <- sc.descs.Start
 	ch <- sc.descs.Mem
 	ch <- sc.descs.Cores
@@ -229,103 +306,88 @@ func (sc *StatzCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- sc.descs.NumSubs
 	ch <- sc.descs.SentMsgs
 	ch <- sc.descs.SentBytes
-	ch <- sc.descs.ReceivedMsgs
-	ch <- sc.descs.ReceivedBytes
+	ch <- sc.descs.RecvMsgs
+	ch <- sc.descs.RecvBytes
 	ch <- sc.descs.SlowConsumers
 
-	// TODO Routez
-	// TODO Channelz
+	// Route Descriptions
+	ch <- sc.descs.RouteSentMsgs
+	ch <- sc.descs.RouteSentBytes
+	ch <- sc.descs.RouteRecvMsgs
+	ch <- sc.descs.RouteRecvBytes
+	ch <- sc.descs.RoutePending
+
+	// Gateway Descriptions
+	ch <- sc.descs.GatewaySentMsgs
+	ch <- sc.descs.GatewaySentBytes
+	ch <- sc.descs.GatewayRecvMsgs
+	ch <- sc.descs.GatewayRecvBytes
+	ch <- sc.descs.GatewayNumInbound
 }
 
-func getGaugeMetric(sm *server.ServerStatsMsg, desc *prometheus.Desc, value float64) prometheus.Metric {
-	return prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, getLabelValues(sm)...)
+func newGaugeMetric(sm *server.ServerStatsMsg, desc *prometheus.Desc, value float64, labels []string) prometheus.Metric {
+	return prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, labels...)
+}
+
+func (sc *StatzCollector) newNatsUpGaugeMetric(value bool) prometheus.Metric {
+	var fval float64
+	if value == true {
+		fval = 1
+	}
+	return prometheus.MustNewConstMetric(sc.natsUp, prometheus.GaugeValue, fval)
 }
 
 // Collect gathers the streaming server serverz metrics.
 func (sc *StatzCollector) Collect(ch chan<- prometheus.Metric) {
 
 	// poll the servers
-	sc.poll()
+	if err := sc.poll(); err != nil {
+		log.Printf("Error polling NATS server: %v", err)
+		ch <- sc.newNatsUpGaugeMetric(false)
+		return
+	}
 
+	// lock the stats
 	sc.Lock()
 	defer sc.Unlock()
 
+	ch <- sc.newNatsUpGaugeMetric(true)
+
 	for _, sm := range sc.stats {
-		ch <- getGaugeMetric(sm, sc.descs.Start, float64(sm.Stats.Start.UnixNano()))
-		ch <- getGaugeMetric(sm, sc.descs.Mem, float64(sm.Stats.Mem))
-		ch <- getGaugeMetric(sm, sc.descs.Cores, float64(sm.Stats.Cores))
-		ch <- getGaugeMetric(sm, sc.descs.CPU, float64(sm.Stats.CPU))
-		ch <- getGaugeMetric(sm, sc.descs.Connections, float64(sm.Stats.Connections))
-		ch <- getGaugeMetric(sm, sc.descs.TotalConnections, float64(sm.Stats.TotalConnections))
-		ch <- getGaugeMetric(sm, sc.descs.ActiveAccounts, float64(sm.Stats.ActiveAccounts))
-		ch <- getGaugeMetric(sm, sc.descs.NumSubs, float64(sm.Stats.NumSubs))
-		ch <- getGaugeMetric(sm, sc.descs.SentMsgs, float64(sm.Stats.Sent.Msgs))
-		ch <- getGaugeMetric(sm, sc.descs.SentBytes, float64(sm.Stats.Sent.Bytes))
-		ch <- getGaugeMetric(sm, sc.descs.ReceivedMsgs, float64(sm.Stats.Received.Msgs))
-		ch <- getGaugeMetric(sm, sc.descs.ReceivedBytes, float64(sm.Stats.Received.Bytes))
-		ch <- getGaugeMetric(sm, sc.descs.SlowConsumers, float64(sm.Stats.SlowConsumers))
+		ch <- newGaugeMetric(sm, sc.descs.Info, 1, serverInfoLabelValues(sm))
 
-		/*
-			 * TODO - gateways and routes
-			for _, gw := range sm.Stats.Gateways {
-				gw.ID
-				gw.Name
-				gw.Sent.Msgs
-				gw.Sent.Bytes
-				gw.Received.Msgs
-				gw.Received.Bytes
-				gw.NumInbound
-			}
+		labels := serverLabelValues(sm)
+		ch <- newGaugeMetric(sm, sc.descs.Start, float64(sm.Stats.Start.UnixNano()), labels)
+		ch <- newGaugeMetric(sm, sc.descs.Mem, float64(sm.Stats.Mem), labels)
+		ch <- newGaugeMetric(sm, sc.descs.Cores, float64(sm.Stats.Cores), labels)
+		ch <- newGaugeMetric(sm, sc.descs.CPU, float64(sm.Stats.CPU), labels)
+		ch <- newGaugeMetric(sm, sc.descs.Connections, float64(sm.Stats.Connections), labels)
+		ch <- newGaugeMetric(sm, sc.descs.TotalConnections, float64(sm.Stats.TotalConnections), labels)
+		ch <- newGaugeMetric(sm, sc.descs.ActiveAccounts, float64(sm.Stats.ActiveAccounts), labels)
+		ch <- newGaugeMetric(sm, sc.descs.NumSubs, float64(sm.Stats.NumSubs), labels)
+		ch <- newGaugeMetric(sm, sc.descs.SentMsgs, float64(sm.Stats.Sent.Msgs), labels)
+		ch <- newGaugeMetric(sm, sc.descs.SentBytes, float64(sm.Stats.Sent.Bytes), labels)
+		ch <- newGaugeMetric(sm, sc.descs.RecvMsgs, float64(sm.Stats.Received.Msgs), labels)
+		ch <- newGaugeMetric(sm, sc.descs.RecvBytes, float64(sm.Stats.Received.Bytes), labels)
+		ch <- newGaugeMetric(sm, sc.descs.SlowConsumers, float64(sm.Stats.SlowConsumers), labels)
+		ch <- newGaugeMetric(sm, sc.descs.RTT, float64(sc.rtts[sm.Server.ID]), labels)
 
-			for _, r := range sm.Stats.Routes {
-				r.ID
-				r.Name
-				r.Sent.Msgs
-				r.Sent.Bytes
-				r.Received.Msgs
-				r.Received.Bytes
-				r.Pending
-			}
-		*/
-	}
-
-	// SEND Request
-	// WAIT
-	// Process Response
-	/*
-		for _, server := range nc.stats {
-			var resp replicatorVarz
-			if err := getMetricURL(nc.httpClient, server.URL, &resp); err != nil {
-				Debugf("ignoring server %s: %v\n", server.ID, err)
-				continue
-			}
-
-			ch <- prometheus.MustNewConstMetric(nc.requestCount, prometheus.CounterValue, float64(resp.RequestCount), server.ID)
-			ch <- prometheus.MustNewConstMetric(nc.startTime, prometheus.CounterValue, float64(resp.StartTime), server.ID)
-			ch <- prometheus.MustNewConstMetric(nc.currentTime, prometheus.CounterValue, float64(resp.CurrentTime), server.ID)
-			ch <- prometheus.MustNewConstMetric(nc.info, prometheus.GaugeValue, 1, server.ID, resp.Uptime)
-			for _, c := range resp.Connectors {
-
-				labelValues := []string{server.ID, c.ID, c.Name}
-
-				connected := float64(0)
-				if c.Connected == true {
-					connected = float64(1)
-				}
-				ch <- prometheus.MustNewConstMetric(nc.connected, prometheus.GaugeValue, connected, labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.connects, prometheus.GaugeValue, float64(c.Connects), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.disconnects, prometheus.GaugeValue, float64(c.Disconnects), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.bytesIn, prometheus.GaugeValue, float64(c.BytesIn), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.bytesOut, prometheus.GaugeValue, float64(c.BytesOut), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.messagesIn, prometheus.GaugeValue, float64(c.MessagesIn), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.messagesOut, prometheus.GaugeValue, float64(c.MessagesOut), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.count, prometheus.GaugeValue, float64(c.RequestCount), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.movingAverage, prometheus.GaugeValue, float64(c.MovingAverage), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.quintile50, prometheus.GaugeValue, float64(c.Quintile50), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.quintile75, prometheus.GaugeValue, float64(c.Quintile75), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.quintile90, prometheus.GaugeValue, float64(c.Quintile90), labelValues...)
-				ch <- prometheus.MustNewConstMetric(nc.quintile95, prometheus.GaugeValue, float64(c.Quintile95), labelValues...)
-			}
+		for _, rs := range sm.Stats.Routes {
+			labels = routeLabelValues(sm, rs)
+			ch <- newGaugeMetric(sm, sc.descs.RouteSentMsgs, float64(rs.Sent.Msgs), labels)
+			ch <- newGaugeMetric(sm, sc.descs.RouteSentBytes, float64(rs.Sent.Bytes), labels)
+			ch <- newGaugeMetric(sm, sc.descs.RouteRecvMsgs, float64(rs.Received.Msgs), labels)
+			ch <- newGaugeMetric(sm, sc.descs.RouteRecvBytes, float64(rs.Received.Bytes), labels)
+			ch <- newGaugeMetric(sm, sc.descs.RoutePending, float64(rs.Pending), labels)
 		}
-	*/
+
+		for _, gw := range sm.Stats.Gateways {
+			labels = gatewayLabelValues(sm, gw)
+			ch <- newGaugeMetric(sm, sc.descs.GatewaySentMsgs, float64(gw.Sent.Msgs), labels)
+			ch <- newGaugeMetric(sm, sc.descs.GatewaySentBytes, float64(gw.Sent.Bytes), labels)
+			ch <- newGaugeMetric(sm, sc.descs.GatewayRecvMsgs, float64(gw.Received.Msgs), labels)
+			ch <- newGaugeMetric(sm, sc.descs.GatewayRecvBytes, float64(gw.Received.Bytes), labels)
+			ch <- newGaugeMetric(sm, sc.descs.GatewayNumInbound, float64(gw.NumInbound), labels)
+		}
+	}
 }
