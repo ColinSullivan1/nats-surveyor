@@ -86,10 +86,10 @@ type StatzCollector struct {
 ////////////////////////////////////////////
 
 var (
-	serverLabels     = []string{"nats_server_cluster", "nats_server_host", "nats_server_id"}
-	serverInfoLabels = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_version"}
-	routeLabels      = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_route_id"}
-	gatewayLabels    = []string{"nats_server_cluster", "nats_server_host", "nats_server_id", "nats_server_gateway_name", "nats_server_gateway_id"}
+	serverLabels     = []string{"server_cluster", "server_host", "server_id"}
+	serverInfoLabels = []string{"server_cluster", "server_host", "server_id", "server_version"}
+	routeLabels      = []string{"server_cluster", "server_host", "server_id", "server_route_id"}
+	gatewayLabels    = []string{"server_cluster", "server_host", "server_id", "server_gateway_name", "server_gateway_id"}
 )
 
 func serverLabelValues(sm *server.ServerStatsMsg) []string {

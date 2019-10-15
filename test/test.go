@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd.old/logger"
+	"github.com/nats-io/nats-server/logger"
 	nats "github.com/nats-io/go-nats"
 	ns "github.com/nats-io/nats-server/server"
 )
