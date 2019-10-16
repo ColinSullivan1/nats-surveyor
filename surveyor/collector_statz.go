@@ -149,7 +149,7 @@ func buildDescs(sc *StatzCollector) {
 	sc.descs.RoutePending = newPromDesc("route_pending_bytes", "Number of bytes pending in the route gauge", routeLabels)
 
 	// Gateways
-	sc.descs.GatewaySentMsgs = newPromDesc("gateway_sent_msgs", "Number of messages sent over the gateway gauge", gatewayLabels)
+	sc.descs.GatewaySentMsgs = newPromDesc("gateway_sent_msgs_count", "Number of messages sent over the gateway gauge", gatewayLabels)
 	sc.descs.GatewaySentBytes = newPromDesc("gateway_sent_bytes", "Number of messages sent over the gateway gauge", gatewayLabels)
 	sc.descs.GatewayRecvMsgs = newPromDesc("gateway_recv_msg_count", "Number of messages sent over the gateway gauge", gatewayLabels)
 	sc.descs.GatewayRecvBytes = newPromDesc("gateway_recv_bytes", "Number of messages sent over the gateway gauge", gatewayLabels)
