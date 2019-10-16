@@ -46,6 +46,8 @@ type statzDescs struct {
 	RecvBytes        *prometheus.Desc
 	SlowConsumers    *prometheus.Desc
 	RTT              *prometheus.Desc
+	Routes           *prometheus.Desc
+	Gateways         *prometheus.Desc
 
 	// Routes
 	RouteSentMsgs  *prometheus.Desc
@@ -136,6 +138,8 @@ func buildDescs(sc *StatzCollector) {
 	sc.descs.RecvBytes = newPromDesc("recv_bytes", "Number of messages received gauge", serverLabels)
 	sc.descs.SlowConsumers = newPromDesc("slow_consumer_count", "Number of slow consumers gauge", serverLabels)
 	sc.descs.RTT = newPromDesc("rtt_nanoseconds", "RTT in nanoseconds gauge", serverLabels)
+	sc.descs.Routes = newPromDesc("route_count", "Number of active routes gauge", serverLabels)
+	sc.descs.Gateways = newPromDesc("gateway_count", "Number of active gateways gauge", serverLabels)
 
 	// Routes
 	sc.descs.RouteSentMsgs = newPromDesc("route_sent_msg_count", "Number of messages sent over the route gauge", routeLabels)
@@ -309,6 +313,8 @@ func (sc *StatzCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- sc.descs.RecvMsgs
 	ch <- sc.descs.RecvBytes
 	ch <- sc.descs.SlowConsumers
+	ch <- sc.descs.Routes
+	ch <- sc.descs.Gateways
 
 	// Route Descriptions
 	ch <- sc.descs.RouteSentMsgs
@@ -371,6 +377,8 @@ func (sc *StatzCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- newGaugeMetric(sm, sc.descs.RecvBytes, float64(sm.Stats.Received.Bytes), labels)
 		ch <- newGaugeMetric(sm, sc.descs.SlowConsumers, float64(sm.Stats.SlowConsumers), labels)
 		ch <- newGaugeMetric(sm, sc.descs.RTT, float64(sc.rtts[sm.Server.ID]), labels)
+		ch <- newGaugeMetric(sm, sc.descs.Routes, float64(len(sm.Stats.Routes)), labels)
+		ch <- newGaugeMetric(sm, sc.descs.Gateways, float64(len(sm.Stats.Gateways)), labels)
 
 		for _, rs := range sm.Stats.Routes {
 			labels = routeLabelValues(sm, rs)
