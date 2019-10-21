@@ -81,6 +81,11 @@ type StatzCollector struct {
 	moreCh      chan struct{}
 	descs       statzDescs
 	natsUp      *prometheus.Desc
+
+	surveyedCnt *prometheus.GaugeVec
+	expectedCnt *prometheus.GaugeVec
+	pollErrCnt *prometheus.CounterVec
+	pollTime *prometheus.SummaryVec
 }
 
 ////////////////////////////////////////////
@@ -155,6 +160,30 @@ func buildDescs(sc *StatzCollector) {
 	sc.descs.GatewayRecvBytes = newPromDesc("gateway_recv_bytes", "Number of messages sent over the gateway gauge", gatewayLabels)
 	sc.descs.GatewayNumInbound = newPromDesc("gateway_inbound_msg_count", "Number inbound messages through the gateway gauge", gatewayLabels)
 
+	// Surveyor
+	sc.surveyedCnt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prometheus.BuildFQName("nats", "survey", "surveyed_count"),
+		Help: "Number of remote hosts successfully surveyed gauge",
+	}, []string{})
+
+
+	sc.expectedCnt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prometheus.BuildFQName("nats", "survey", "expected_count"),
+		Help: "Number of remote hosts expected to responded gauge",
+	}, []string{})
+
+
+	sc.pollTime = prometheus.NewSummaryVec(prometheus.SummaryOpts{
+		Name:prometheus.BuildFQName("nats", "survey", "duration_seconds"),
+		Help: "Time it took to gather the surveyed data histogram",
+	}, []string{})
+
+
+	sc.pollErrCnt = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:prometheus.BuildFQName("nats", "survey", "poll_error_count"),
+		Help:"The number of times the poller encountered errors counter",
+	}, []string{})
+
 	// Add Number of leaf node connections
 	// Leaf nodes
 	// Remotes
@@ -179,6 +208,9 @@ func NewStatzCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration)
 		moreCh:      make(chan struct{}, 1),
 	}
 	buildDescs(sc)
+
+	sc.expectedCnt.WithLabelValues().Set(float64(numServers))
+
 	nc.Subscribe(sc.reply, sc.handleResponse)
 	return sc
 }
@@ -291,6 +323,7 @@ func (sc *StatzCollector) poll() error {
 			sc.servers[key] = false
 		}
 	}
+
 	return nil
 }
 
@@ -329,10 +362,20 @@ func (sc *StatzCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- sc.descs.GatewayRecvMsgs
 	ch <- sc.descs.GatewayRecvBytes
 	ch <- sc.descs.GatewayNumInbound
+
+	// Surveyor
+	sc.surveyedCnt.Describe(ch)
+	sc.expectedCnt.Describe(ch)
+	sc.pollErrCnt.Describe(ch)
+	sc.pollTime.Describe(ch)
 }
 
 func newGaugeMetric(sm *server.ServerStatsMsg, desc *prometheus.Desc, value float64, labels []string) prometheus.Metric {
 	return prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, labels...)
+}
+
+func newCounterMetric(desc *prometheus.Desc, value float64, labels []string) prometheus.Metric {
+	return prometheus.MustNewConstMetric(desc, prometheus.CounterValue, value, labels...)
 }
 
 func (sc *StatzCollector) newNatsUpGaugeMetric(value bool) prometheus.Metric {
@@ -345,10 +388,19 @@ func (sc *StatzCollector) newNatsUpGaugeMetric(value bool) prometheus.Metric {
 
 // Collect gathers the streaming server serverz metrics.
 func (sc *StatzCollector) Collect(ch chan<- prometheus.Metric) {
+	timer := prometheus.NewTimer(sc.pollTime.WithLabelValues())
+	defer func() {
+		timer.ObserveDuration()
+		sc.pollTime.Collect(ch)
+		sc.pollErrCnt.Collect(ch)
+		sc.surveyedCnt.Collect(ch)
+		sc.expectedCnt.Collect(ch)
+	}()
 
 	// poll the servers
 	if err := sc.poll(); err != nil {
 		log.Printf("Error polling NATS server: %v", err)
+		sc.pollErrCnt.WithLabelValues().Inc()
 		ch <- sc.newNatsUpGaugeMetric(false)
 		return
 	}
@@ -360,6 +412,8 @@ func (sc *StatzCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- sc.newNatsUpGaugeMetric(true)
 
 	for _, sm := range sc.stats {
+		sc.surveyedCnt.WithLabelValues().Inc()
+
 		ch <- newGaugeMetric(sm, sc.descs.Info, 1, serverInfoLabelValues(sm))
 
 		labels := serverLabelValues(sm)
