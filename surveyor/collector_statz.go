@@ -88,26 +88,34 @@ type StatzCollector struct {
 ////////////////////////////////////////////
 
 var (
-	serverLabels     = []string{"server_cluster", "server_host", "server_id"}
-	serverInfoLabels = []string{"server_cluster", "server_host", "server_id", "server_version"}
-	routeLabels      = []string{"server_cluster", "server_host", "server_id", "server_route_id"}
-	gatewayLabels    = []string{"server_cluster", "server_host", "server_id", "server_gateway_name", "server_gateway_id"}
+	serverLabels     = []string{"server_cluster", "server_name", "server_id"}
+	serverInfoLabels = []string{"server_cluster", "server_name", "server_id", "server_version"}
+	routeLabels      = []string{"server_cluster", "server_name", "server_id", "server_route_id"}
+	gatewayLabels    = []string{"server_cluster", "server_name", "server_id", "server_gateway_name", "server_gateway_id"}
 )
 
+func serverName(sm *server.ServerStatsMsg) string {
+	if sm.Server.Name == "" {
+		return sm.Server.ID
+	}
+
+	return sm.Server.Name
+}
+
 func serverLabelValues(sm *server.ServerStatsMsg) []string {
-	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID}
+	return []string{sm.Server.Cluster, serverName(sm), sm.Server.ID}
 }
 
 func serverInfoLabelValues(sm *server.ServerStatsMsg) []string {
-	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, sm.Server.Version}
+	return []string{sm.Server.Cluster, serverName(sm), sm.Server.ID, sm.Server.Version}
 }
 
 func routeLabelValues(sm *server.ServerStatsMsg, rStat *server.RouteStat) []string {
-	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, strconv.FormatUint(rStat.ID, 10)}
+	return []string{sm.Server.Cluster, serverName(sm), sm.Server.ID, strconv.FormatUint(rStat.ID, 10)}
 }
 
 func gatewayLabelValues(sm *server.ServerStatsMsg, gStat *server.GatewayStat) []string {
-	return []string{sm.Server.Cluster, sm.Server.Host, sm.Server.ID, gStat.Name, strconv.FormatUint(gStat.ID, 10)}
+	return []string{sm.Server.Cluster, serverName(sm), sm.Server.ID, gStat.Name, strconv.FormatUint(gStat.ID, 10)}
 }
 
 // Up/Down on servers - look at discovery mechanisms in Prometheus - aging out, how does it work?
@@ -199,9 +207,9 @@ func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 			sc.doneCh <- struct{}{}
 		}
 	} else if len(sc.stats) < sc.numServers {
-		log.Printf("Late reply for server [%15s : %15s : %s]: %v", m.Server.Cluster, m.Server.Host, m.Server.ID, rtt)
+		log.Printf("Late reply for server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
 	} else {
-		log.Printf("Extra reply from server [%15s : %15s : %s]: %v", m.Server.Cluster, m.Server.Host, m.Server.ID, rtt)
+		log.Printf("Extra reply from server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
 		sc.more++
 		if sc.more == 1 {
 			sc.moreCh <- struct{}{}
@@ -253,8 +261,8 @@ func (sc *StatzCollector) poll() error {
 	// If we do not see expected number of servers complain.
 	if ns != sc.numServers {
 		sort.Slice(stats, func(i, j int) bool {
-			a := fmt.Sprintf("%s-%s", stats[i].Server.Cluster, stats[i].Server.Host)
-			b := fmt.Sprintf("%s-%s", stats[j].Server.Cluster, stats[j].Server.Host)
+			a := fmt.Sprintf("%s-%s", stats[i].Server.Cluster, serverName(stats[i]))
+			b := fmt.Sprintf("%s-%s", stats[j].Server.Cluster, serverName(stats[j]))
 			return a < b
 		})
 
@@ -269,7 +277,7 @@ func (sc *StatzCollector) poll() error {
 			key := fmt.Sprintf("%s:%s", stat.Server.Cluster, stat.Server.Host)
 			// Mark this server has been seen
 			sc.servers[key] = true
-			log.Printf("Server [%15s : %15s : %s]: %v\n", stat.Server.Cluster, stat.Server.Host, stat.Server.ID, rtts[stat.Server.ID])
+			log.Printf("Server [%15s : %15s : %15s : %s]: %v\n", stat.Server.Cluster, serverName(stat), stat.Server.Host, stat.Server.ID, rtts[stat.Server.ID])
 		}
 
 		log.Println("Missing servers:")
