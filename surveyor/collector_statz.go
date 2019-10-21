@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	nats "github.com/nats-io/go-nats"
 	server "github.com/nats-io/nats-server/server"
+	nats "github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -84,8 +84,8 @@ type StatzCollector struct {
 
 	surveyedCnt *prometheus.GaugeVec
 	expectedCnt *prometheus.GaugeVec
-	pollErrCnt *prometheus.CounterVec
-	pollTime *prometheus.SummaryVec
+	pollErrCnt  *prometheus.CounterVec
+	pollTime    *prometheus.SummaryVec
 }
 
 ////////////////////////////////////////////
@@ -174,22 +174,19 @@ func buildDescs(sc *StatzCollector) {
 		Help: "Number of remote hosts successfully surveyed gauge",
 	}, []string{})
 
-
 	sc.expectedCnt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: prometheus.BuildFQName("nats", "survey", "expected_count"),
 		Help: "Number of remote hosts expected to responded gauge",
 	}, []string{})
 
-
 	sc.pollTime = prometheus.NewSummaryVec(prometheus.SummaryOpts{
-		Name:prometheus.BuildFQName("nats", "survey", "duration_seconds"),
+		Name: prometheus.BuildFQName("nats", "survey", "duration_seconds"),
 		Help: "Time it took to gather the surveyed data histogram",
 	}, []string{})
 
-
 	sc.pollErrCnt = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:prometheus.BuildFQName("nats", "survey", "poll_error_count"),
-		Help:"The number of times the poller encountered errors counter",
+		Name: prometheus.BuildFQName("nats", "survey", "poll_error_count"),
+		Help: "The number of times the poller encountered errors counter",
 	}, []string{})
 
 	// Add Number of leaf node connections

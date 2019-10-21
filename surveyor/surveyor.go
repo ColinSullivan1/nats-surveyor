@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	nats "github.com/nats-io/go-nats"
+	nats "github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/bcrypt"
@@ -43,7 +43,7 @@ var (
 	DefaultExpectedServers = 3
 	DefaultPollTimeout     = time.Second * 5
 
-	// bcryptPrefix from gnatsd
+	// bcryptPrefix from nats-server
 	bcryptPrefix = "$2a$"
 )
 
