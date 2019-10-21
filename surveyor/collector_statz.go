@@ -374,10 +374,6 @@ func newGaugeMetric(sm *server.ServerStatsMsg, desc *prometheus.Desc, value floa
 	return prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, labels...)
 }
 
-func newCounterMetric(desc *prometheus.Desc, value float64, labels []string) prometheus.Metric {
-	return prometheus.MustNewConstMetric(desc, prometheus.CounterValue, value, labels...)
-}
-
 func (sc *StatzCollector) newNatsUpGaugeMetric(value bool) prometheus.Metric {
 	var fval float64
 	if value == true {
