@@ -202,6 +202,6 @@ anti-pattern, we won't be submitting it to Prometheus as an official exporter at
 - [X] Basic auth
 - [X] Up/Down
 - [X] Standardized Metric names
-- [ ] Docker Image
+- [X] Docker Image
 - [ ] Copy to nats-io
 - [ ] CI
