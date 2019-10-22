@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	server "github.com/nats-io/nats-server/server"
+	server "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 )
