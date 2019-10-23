@@ -20,6 +20,7 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,7 +32,6 @@ import (
 // statzDescs holds the metric descriptions
 type statzDescs struct {
 	Info             *prometheus.Desc
-	Seq              *prometheus.Desc
 	Start            *prometheus.Desc
 	Mem              *prometheus.Desc
 	Cores            *prometheus.Desc
@@ -74,6 +74,7 @@ type StatzCollector struct {
 	pollTimeout time.Duration
 	reply       string
 	polling     bool
+	pollkey     string
 	numServers  int
 	more        int
 	servers     map[string]bool
@@ -136,7 +137,6 @@ func buildDescs(sc *StatzCollector) {
 		"1 if connected to NATS, 0 otherwise.  A gauge.", nil, nil)
 
 	sc.descs.Info = newPromDesc("info", "General Server information Summary gauge", serverInfoLabels)
-	sc.descs.Seq = newPromDesc("sequence_number", "Metric sequence number gauge", serverLabels)
 	sc.descs.Start = newPromDesc("start_time", "Server start time gauge", serverLabels)
 	sc.descs.Mem = newPromDesc("mem_bytes", "Server memory gauge", serverLabels)
 	sc.descs.Cores = newPromDesc("core_count", "Machine cores gauge", serverLabels)
@@ -216,7 +216,7 @@ func NewStatzCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration)
 
 	sc.expectedCnt.WithLabelValues().Set(float64(numServers))
 
-	nc.Subscribe(sc.reply, sc.handleResponse)
+	nc.Subscribe(sc.reply+".*", sc.handleResponse)
 	return sc
 }
 
@@ -227,15 +227,16 @@ func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 	}
 
 	sc.Lock()
+	isCurrent := strings.HasSuffix(msg.Subject, sc.pollkey)
 	rtt := time.Now().Sub(sc.start)
-	if sc.polling {
+	if sc.polling && isCurrent {
 		sc.stats = append(sc.stats, m)
 		sc.rtts[m.Server.ID] = rtt
 		if len(sc.stats) == sc.numServers {
 			sc.polling = false
 			sc.doneCh <- struct{}{}
 		}
-	} else if len(sc.stats) < sc.numServers {
+	} else if !isCurrent || len(sc.stats) < sc.numServers {
 		log.Printf("Late reply for server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
 	} else {
 		log.Printf("Extra reply from server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
@@ -252,6 +253,7 @@ func (sc *StatzCollector) poll() error {
 	sc.Lock()
 	sc.start = time.Now()
 	sc.polling = true
+	sc.pollkey = strconv.Itoa(int(sc.start.UnixNano()))
 	sc.stats = nil
 	sc.rtts = make(map[string]time.Duration, sc.numServers)
 	sc.more = 0
@@ -270,7 +272,7 @@ func (sc *StatzCollector) poll() error {
 	}
 
 	// Send our ping for statusz updates
-	if err := sc.nc.PublishRequest("$SYS.REQ.SERVER.PING", sc.reply, nil); err != nil {
+	if err := sc.nc.PublishRequest("$SYS.REQ.SERVER.PING", sc.reply+"."+sc.pollkey, nil); err != nil {
 		return err
 	}
 
@@ -302,8 +304,8 @@ func (sc *StatzCollector) poll() error {
 
 		log.Println("RTTs for responding servers:")
 		for _, stat := range stats {
-			// We use for key the cluster name followed by IP (Host)
-			key := fmt.Sprintf("%s:%s", stat.Server.Cluster, stat.Server.Host)
+			// We use for key the cluster name followed by ID which is unique per server
+			key := fmt.Sprintf("%s:%s", stat.Server.Cluster, stat.Server.ID)
 			// Mark this server has been seen
 			sc.servers[key] = true
 			log.Printf("Server [%15s : %15s : %15s : %s]: %v\n", stat.Server.Cluster, serverName(stat), stat.Server.Host, stat.Server.ID, rtts[stat.Server.ID])
