@@ -271,6 +271,13 @@ func (sc *StatzCollector) poll() error {
 	}
 	sc.Unlock()
 
+	// not all error paths clean this up, so this way might be easier
+	defer func() {
+		sc.Lock()
+		sc.polling = false
+		sc.Unlock()
+	}()
+
 	// fail fast if we aren't connected to return a nats down (nats_up=0) to
 	// Prometheus
 	if sc.nc.IsConnected() == false {
