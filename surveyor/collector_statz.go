@@ -220,6 +220,14 @@ func NewStatzCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration)
 	return sc
 }
 
+// Polling determines if the collector is in a polling cycle
+func (sc *StatzCollector) Polling() bool {
+	sc.Lock()
+	defer sc.Unlock()
+
+	return sc.polling
+}
+
 func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 	m := &server.ServerStatsMsg{}
 	if err := json.Unmarshal(msg.Data, m); err != nil {
