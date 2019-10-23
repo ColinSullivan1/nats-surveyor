@@ -214,8 +214,6 @@ func (s *Surveyor) isValidUserPass(user, password string) bool {
 func (s *Surveyor) httpAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if s.opts.HTTPUser != "" {
-			log.Printf("auth is disabled\n")
-
 			auth := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
 			if len(auth) != 2 || auth[0] != "Basic" {
 				http.Error(rw, "authorization failed", http.StatusUnauthorized)
