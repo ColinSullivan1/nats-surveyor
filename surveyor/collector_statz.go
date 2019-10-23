@@ -215,6 +215,14 @@ func NewStatzCollector(nc *nats.Conn, numServers int, pollTimeout time.Duration)
 	return sc
 }
 
+// Polling determines if the collector is in a polling cycle
+func (sc *StatzCollector) Polling() bool {
+	sc.Lock()
+	defer sc.Unlock()
+
+	return sc.polling
+}
+
 func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 	m := &server.ServerStatsMsg{}
 	if err := json.Unmarshal(msg.Data, m); err != nil {
@@ -260,6 +268,13 @@ func (sc *StatzCollector) poll() error {
 	default:
 	}
 	sc.Unlock()
+
+	// not all error paths clean this up, so this way might be easier
+	defer func() {
+		sc.Lock()
+		sc.polling = false
+		sc.Unlock()
+	}()
 
 	// fail fast if we aren't connected to return a nats down (nats_up=0) to
 	// Prometheus
