@@ -276,6 +276,7 @@ func (sc *StatzCollector) poll() error {
 	select {
 	case <-sc.doneCh:
 	case <-time.After(sc.pollTimeout):
+		log.Printf("Poll timeout after %v while waiting for %d responses\n", sc.pollTimeout, sc.numServers)
 	}
 
 	sc.Lock()
