@@ -87,6 +87,7 @@ type StatzCollector struct {
 	expectedCnt *prometheus.GaugeVec
 	pollErrCnt  *prometheus.CounterVec
 	pollTime    *prometheus.SummaryVec
+	lateReplies *prometheus.CounterVec
 }
 
 ////////////////////////////////////////////
@@ -189,16 +190,10 @@ func buildDescs(sc *StatzCollector) {
 		Help: "The number of times the poller encountered errors counter",
 	}, []string{})
 
-	// Add Number of leaf node connections
-	// Leaf nodes
-	// Remotes
-	// config_load_time
-
-	// Runtime go
-	// # of go routines
-	// GC time
-
-	// RTT on a node - histogram of connection RTTs
+	sc.lateReplies = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: prometheus.BuildFQName("nats", "survey", "late_replies_count"),
+		Help: "Number of times a reply was received too late counter",
+	}, []string{"timeout"})
 }
 
 // NewStatzCollector creates a NATS Statz Collector
@@ -238,6 +233,7 @@ func (sc *StatzCollector) handleResponse(msg *nats.Msg) {
 		}
 	} else if !isCurrent || len(sc.stats) < sc.numServers {
 		log.Printf("Late reply for server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
+		sc.lateReplies.WithLabelValues(fmt.Sprintf("%.1f", sc.pollTimeout.Seconds())).Inc()
 	} else {
 		log.Printf("Extra reply from server [%15s : %15s : %s]: %v", m.Server.Cluster, serverName(m), m.Server.ID, rtt)
 		sc.more++
@@ -375,6 +371,7 @@ func (sc *StatzCollector) Describe(ch chan<- *prometheus.Desc) {
 	sc.expectedCnt.Describe(ch)
 	sc.pollErrCnt.Describe(ch)
 	sc.pollTime.Describe(ch)
+	sc.lateReplies.Describe(ch)
 }
 
 func newGaugeMetric(sm *server.ServerStatsMsg, desc *prometheus.Desc, value float64, labels []string) prometheus.Metric {
@@ -398,6 +395,7 @@ func (sc *StatzCollector) Collect(ch chan<- prometheus.Metric) {
 		sc.pollErrCnt.Collect(ch)
 		sc.surveyedCnt.Collect(ch)
 		sc.expectedCnt.Collect(ch)
+		sc.lateReplies.Collect(ch)
 	}()
 
 	// poll the servers
