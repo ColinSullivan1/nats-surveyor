@@ -280,6 +280,9 @@ func (s *Surveyor) startHTTP() error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", s.getScrapeHandler())
+	mux.HandleFunc("/healthz", func(resp http.ResponseWriter, req *http.Request) {
+		resp.Write([]byte("ok"))
+	})
 
 	srv := &http.Server{
 		Addr:           hp,
