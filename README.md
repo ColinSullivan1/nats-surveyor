@@ -1,3 +1,7 @@
+# Deprecated
+
+This was for initial development and testing the idea out.  Do **not** use this repository.  Use [nats-io/nats-surveyor](https://github.com/nats-io/nats-surveyor) instead.   
+
 # NATS Surveyor
 
 A NATS Monitoring POC.  Eventually this will be moved into the `nats-io` organization.
